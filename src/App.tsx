@@ -13,6 +13,14 @@ import { QRCodeSVG } from "qrcode.react";
 const STORAGE_TEXT = "texttv.displayText";
 const STORAGE_PIN = "texttv.pin";
 const STORAGE_AUTH = "texttv.auth";
+const SYNC_SERVER_URL = (import.meta.env.VITE_SYNC_SERVER_URL || "").replace(
+  /\/+$/,
+  "",
+);
+
+function syncUrl(path: string) {
+  return `${SYNC_SERVER_URL}${path}`;
+}
 
 function hashPin(pin: string) {
   let hash = 2166136261;
@@ -29,11 +37,13 @@ function getText() {
 
 function useSyncedText() {
   const [text, setText] = useState(getText);
-  const [connected, setConnected] = useState(false);
+  const [connection, setConnection] = useState<
+    "connecting" | "connected" | "disconnected"
+  >("connecting");
 
   useEffect(() => {
     let active = true;
-    fetch("/api/text")
+    fetch(syncUrl("/api/text"))
       .then((response) => {
         if (!response.ok) throw new Error("Unable to load display text");
         return response.json() as Promise<{ text: string }>;
@@ -43,11 +53,11 @@ function useSyncedText() {
         setText(data.text);
         localStorage.setItem(STORAGE_TEXT, data.text);
       })
-      .catch(() => setConnected(false));
+      .catch(() => setConnection("disconnected"));
 
-    const events = new EventSource("/api/events");
-    events.onopen = () => setConnected(true);
-    events.onerror = () => setConnected(false);
+    const events = new EventSource(syncUrl("/api/events"));
+    events.onopen = () => setConnection("connected");
+    events.onerror = () => setConnection("disconnected");
     events.onmessage = (event) => {
       const data = JSON.parse(event.data) as { text: string };
       setText(data.text);
@@ -60,7 +70,7 @@ function useSyncedText() {
     };
   }, []);
 
-  return [text, setText, connected] as const;
+  return [text, setText, connection] as const;
 }
 
 function PinScreen({
@@ -141,7 +151,7 @@ function PinScreen({
 }
 
 function Admin() {
-  const [text, setText, connected] = useSyncedText();
+  const [text, setText, connection] = useSyncedText();
   const [saved, setSaved] = useState(false);
   const [copied, setCopied] = useState(false);
   const [ip, setIp] = useState("Loading...");
@@ -156,7 +166,7 @@ function Admin() {
   async function updateDisplay() {
     setSyncError("");
     try {
-      const response = await fetch("/api/text", {
+      const response = await fetch(syncUrl("/api/text"), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text }),
@@ -211,11 +221,13 @@ function Admin() {
               <div className="flex items-center justify-between gap-3">
                 <h2 className="font-semibold">Display Text</h2>
                 <span
-                  className={`text-xs ${connected ? "text-emerald-600" : "text-amber-600"}`}
+                  className={`text-xs ${connection === "connected" ? "text-emerald-600" : connection === "disconnected" ? "text-red-600" : "text-amber-600"}`}
                 >
-                  {connected
+                  {connection === "connected"
                     ? "Sync server connected"
-                    : "Connecting to sync server…"}
+                    : connection === "disconnected"
+                      ? "Sync server unavailable"
+                      : "Connecting to sync server…"}
                 </span>
               </div>
               <p className="mt-1 text-sm text-slate-500">
