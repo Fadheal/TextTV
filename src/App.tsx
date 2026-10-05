@@ -13,14 +13,6 @@ import { QRCodeSVG } from "qrcode.react";
 const STORAGE_TEXT = "texttv.displayText";
 const STORAGE_PIN = "texttv.pin";
 const STORAGE_AUTH = "texttv.auth";
-const SYNC_SERVER_URL = (import.meta.env.VITE_SYNC_SERVER_URL || "").replace(
-  /\/+$/,
-  "",
-);
-
-function syncUrl(path: string) {
-  return `${SYNC_SERVER_URL}${path}`;
-}
 
 function hashPin(pin: string) {
   let hash = 2166136261;
@@ -43,7 +35,7 @@ function useSyncedText() {
 
   useEffect(() => {
     let active = true;
-    fetch(syncUrl("/api/text"))
+    fetch("/api/text")
       .then((response) => {
         if (!response.ok) throw new Error("Unable to load display text");
         return response.json() as Promise<{ text: string }>;
@@ -55,7 +47,7 @@ function useSyncedText() {
       })
       .catch(() => setConnection("disconnected"));
 
-    const events = new EventSource(syncUrl("/api/events"));
+    const events = new EventSource("/api/events");
     events.onopen = () => setConnection("connected");
     events.onerror = () => setConnection("disconnected");
     events.onmessage = (event) => {
@@ -166,7 +158,7 @@ function Admin() {
   async function updateDisplay() {
     setSyncError("");
     try {
-      const response = await fetch(syncUrl("/api/text"), {
+      const response = await fetch("/api/text", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text }),

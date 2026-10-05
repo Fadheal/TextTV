@@ -1,12 +1,6 @@
 export function createApiMiddleware() {
   let text = "";
   const clients = new Set();
-  const allowedOrigins = new Set(
-    (process.env.TEXTTV_ALLOWED_ORIGINS ?? "")
-      .split(",")
-      .map((origin) => origin.trim())
-      .filter(Boolean),
-  );
 
   function broadcast() {
     const message = `data: ${JSON.stringify({ text })}\n\n`;
@@ -21,18 +15,15 @@ export function createApiMiddleware() {
     }
 
     const origin = request.headers.origin;
-    let sameOriginHost = false;
     if (origin) {
+      let sameOriginHost = false;
       try {
         sameOriginHost = new URL(origin).host === request.headers.host;
       } catch {}
-    }
-    if (origin && !allowedOrigins.has(origin) && !sameOriginHost) {
-      response.writeHead(403).end("Origin not allowed");
-      return;
-    }
-
-    if (origin) {
+      if (!sameOriginHost) {
+        response.writeHead(403).end("Cross-origin requests are not allowed");
+        return;
+      }
       response.setHeader("Access-Control-Allow-Origin", origin);
       response.setHeader("Vary", "Origin");
     }
