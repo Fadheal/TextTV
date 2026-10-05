@@ -1,36 +1,28 @@
 # TextTV
 
-Self-hosted text display app built with React, Vite, TypeScript and Tailwind CSS. The frontend and realtime API run together in one persistent Node.js process. Text stays in RAM; there is no database or hosted sync service.
+TextTV is a React, Vite, TypeScript and Tailwind CSS app. Supabase stores and broadcasts shared display text. Admin access uses a simple client-side PIN screen; it does not use Supabase Auth or a custom backend.
 
 ## Routes
 
-- `/` admin PIN
-- `/admin` admin dashboard
-- `/display` fullscreen TV display
+- `/` admin sign-in and dashboard
+- `/display` public fullscreen TV display
 
-## Run
+## Supabase setup
+
+1. Create a Supabase project.
+2. In the Supabase SQL Editor, run [supabase/schema.sql](supabase/schema.sql). It creates the shared text row, public read/write policies, and realtime setup. If the table already exists, run it again to add the `font_size` column.
+3. Copy `.env.example` to `.env.local`. Set the project URL and publishable/anon key from Supabase project settings, and choose a `VITE_ADMIN_PIN`.
+4. Restart the dev server after changing environment variables.
+
+**Security warning:** the PIN is bundled into the public frontend, so it is only a casual screen lock. Anyone who can inspect the app can discover/bypass it, and the database policies allow unauthenticated writes. Do not use this setup for sensitive content or expose it where write access must be protected. Secure PIN authorization requires server-side validation (for example, a Supabase Edge Function); client-only PIN checks cannot secure database writes.
+
+## Run locally
 
 ```bash
 npm install
 npm run dev
 ```
 
-TextTV listens on `0.0.0.0:5173` in development mode.
+Vite serves the app on `http://localhost:5173`. The `/display` screen can be opened on any device that can reach the deployed app. For production, run `npm run build` and deploy the generated `dist/` directory to any static host. Vercel's rewrite configuration supports the `/display` route.
 
-Open the server's LAN address from other devices, then use `/display`. For production, run `npm run build` and then `npm start` on the same persistent Node.js host.
-
-## One-service deployment
-
-Deploy the repository as one Node.js web service or Docker container. Use:
-
-1. Build command: `npm ci && npm run build`
-2. Start command: `npm start`
-3. Set the service's `PORT` environment variable if the host requires a specific port.
-
-Alternatively, build and run the included `Dockerfile`. Keep exactly one running instance: each instance has its own in-memory text and connected displays. Devices on different networks need a secure route, such as a private VPN, to the host.
-
-Vercel cannot run this persistent in-memory server as one service. A Vercel deployment or `VITE_SYNC_SERVER_URL` setting will not provide shared realtime state. For the no-database setup, use the Node server as the app host instead.
-
-## Important
-
-The server holds current text only in RAM, so it resets if the server restarts. All clients must reach the same server instance. Do not expose the server directly to the public internet: write access currently has no server-side authentication. The admin PIN remains browser-local and is not a server security boundary.
+The admin dashboard's **Display font size** slider adjusts the TV text from 50% to 200%. Click **Update Display** to save the text and size to Supabase; connected displays receive both values in realtime.

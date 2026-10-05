@@ -32,7 +32,6 @@ button { cursor: pointer; }
   justify-content: center;
   text-align: center;
   color: white;
-  font-size: clamp(3rem, 9vw, 12rem);
   line-height: 1.05;
   font-weight: 700;
   white-space: pre-wrap;
@@ -42,7 +41,6 @@ button { cursor: pointer; }
 
 .tv-empty {
   opacity: .18;
-  font-size: clamp(1.5rem, 4vw, 4rem);
 }
 
 @media (max-width: 640px) {

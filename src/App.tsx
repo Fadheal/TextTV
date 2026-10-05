@@ -1,104 +1,125 @@
 import { useEffect, useMemo, useState } from "react";
+import type { FormEvent } from "react";
 import {
-  ExternalLink,
-  Copy,
   Check,
-  Monitor,
+  Copy,
+  ExternalLink,
   LockKeyhole,
   LogOut,
+  Monitor,
   Wifi,
 } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
-
-const STORAGE_TEXT = "texttv.displayText";
-const STORAGE_PIN = "texttv.pin";
-const STORAGE_AUTH = "texttv.auth";
-
-function hashPin(pin: string) {
-  let hash = 2166136261;
-  for (let i = 0; i < pin.length; i++) {
-    hash ^= pin.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(16);
-}
-
-function getText() {
-  return localStorage.getItem(STORAGE_TEXT) ?? "";
-}
+import {
+  adminPin,
+  isAdminPinConfigured,
+  isSupabaseConfigured,
+  supabase,
+} from "./lib/supabase";
 
 function useSyncedText() {
-  const [text, setText] = useState(getText);
+  const [text, setText] = useState("");
+  const [fontSize, setFontSize] = useState(100);
   const [connection, setConnection] = useState<
     "connecting" | "connected" | "disconnected"
   >("connecting");
 
   useEffect(() => {
-    let active = true;
-    fetch("/api/text")
-      .then((response) => {
-        if (!response.ok) throw new Error("Unable to load display text");
-        return response.json() as Promise<{ text: string }>;
-      })
-      .then((data) => {
-        if (!active) return;
-        setText(data.text);
-        localStorage.setItem(STORAGE_TEXT, data.text);
-      })
-      .catch(() => setConnection("disconnected"));
+    if (!supabase) {
+      setConnection("disconnected");
+      return;
+    }
 
-    const events = new EventSource("/api/events");
-    events.onopen = () => setConnection("connected");
-    events.onerror = () => setConnection("disconnected");
-    events.onmessage = (event) => {
-      const data = JSON.parse(event.data) as { text: string };
-      setText(data.text);
-      localStorage.setItem(STORAGE_TEXT, data.text);
-    };
+    let active = true;
+    void supabase
+      .from("display_state")
+      .select("text, font_size")
+      .eq("id", 1)
+      .single()
+      .then(({ data, error }) => {
+        if (!active) return;
+        if (error) {
+          setConnection("disconnected");
+          return;
+        }
+        setText(data.text);
+        setFontSize(data.font_size);
+      });
+
+    const channel = supabase
+      .channel("display-state")
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "display_state",
+          filter: "id=eq.1",
+        },
+        (payload) => {
+          const updatedText = payload.new.text;
+          if (typeof updatedText === "string") setText(updatedText);
+          const updatedFontSize = payload.new.font_size;
+          if (typeof updatedFontSize === "number") {
+            setFontSize(updatedFontSize);
+          }
+        },
+      )
+      .subscribe((status) => {
+        if (!active) return;
+        setConnection(status === "SUBSCRIBED" ? "connected" : "disconnected");
+      });
 
     return () => {
       active = false;
-      events.close();
+      void supabase?.removeChannel(channel);
     };
   }, []);
 
-  return [text, setText, connection] as const;
+  return [text, setText, fontSize, setFontSize, connection] as const;
 }
 
-function PinScreen({
-  setup,
-  onSuccess,
-}: {
-  setup: boolean;
-  onSuccess: () => void;
-}) {
+function SupabaseSetup() {
+  return (
+    <main className="min-h-screen bg-slate-50 p-5 text-slate-950">
+      <section className="mx-auto mt-16 max-w-xl rounded-2xl border border-slate-200 bg-white p-7 shadow-sm">
+        <div className="flex size-11 items-center justify-center rounded-xl bg-blue-600 text-white">
+          <Wifi size={21} />
+        </div>
+        <h1 className="mt-5 text-2xl font-bold">Connect TextTV to Supabase</h1>
+        <p className="mt-2 text-sm leading-6 text-slate-600">
+          Add your Supabase project URL and publishable/anon key to the local
+          environment, then run the SQL setup in{" "}
+          <strong>supabase/schema.sql</strong>.
+        </p>
+        <p className="mt-4 rounded-xl bg-slate-50 p-4 text-sm text-slate-600">
+          Required variables: <strong>VITE_SUPABASE_URL</strong>,{" "}
+          <strong>VITE_SUPABASE_ANON_KEY</strong>, and{" "}
+          <strong>VITE_ADMIN_PIN</strong>.
+        </p>
+      </section>
+    </main>
+  );
+}
+
+function PinScreen({ onSuccess }: { onSuccess: () => void }) {
   const [pin, setPin] = useState("");
   const [error, setError] = useState("");
 
-  function submit() {
-    if (pin.length < 4) {
-      setError("Use at least 4 digits.");
-      return;
-    }
-
-    if (setup) {
-      localStorage.setItem(STORAGE_PIN, hashPin(pin));
-      localStorage.setItem(STORAGE_AUTH, "1");
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!adminPin) return;
+    if (pin === adminPin) {
+      setError("");
       onSuccess();
       return;
     }
-
-    if (hashPin(pin) === localStorage.getItem(STORAGE_PIN)) {
-      localStorage.setItem(STORAGE_AUTH, "1");
-      onSuccess();
-    } else {
-      setError("Incorrect PIN.");
-      setPin("");
-    }
+    setError("Incorrect PIN.");
+    setPin("");
   }
 
   return (
-    <main className="min-h-screen bg-slate-50 flex items-center justify-center p-5">
+    <main className="flex min-h-screen items-center justify-center bg-slate-50 p-5">
       <section className="w-full max-w-sm">
         <div className="mb-8 text-center">
           <div className="mx-auto mb-4 flex size-12 items-center justify-center rounded-2xl bg-blue-600 text-white shadow-lg shadow-blue-600/20">
@@ -106,70 +127,91 @@ function PinScreen({
           </div>
           <h1 className="text-2xl font-bold tracking-tight">TextTV</h1>
           <p className="mt-1 text-sm text-slate-500">
-            {setup
-              ? "Create a PIN for the admin dashboard."
-              : "Enter your admin PIN."}
+            Enter your PIN to open the admin dashboard.
           </p>
         </div>
-
-        <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-          <label className="mb-2 block text-sm font-medium">PIN</label>
+        <form
+          onSubmit={submit}
+          className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"
+        >
+          <label className="mb-2 block text-sm font-medium" htmlFor="pin">
+            Admin PIN
+          </label>
           <input
+            id="pin"
             autoFocus
+            autoComplete="current-password"
             inputMode="numeric"
+            pattern="[0-9]*"
             type="password"
+            required
             maxLength={8}
             value={pin}
-            onChange={(e) => {
-              setPin(e.target.value.replace(/\D/g, ""));
-              setError("");
-            }}
-            onKeyDown={(e) => e.key === "Enter" && submit()}
+            onChange={(event) =>
+              setPin(event.target.value.replace(/\D/g, "").slice(0, 8))
+            }
             className="h-12 w-full rounded-xl border border-slate-200 bg-slate-50 px-4 text-center text-xl tracking-[0.5em] outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10"
-            placeholder="••••"
+            placeholder="••••••"
           />
-          {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
+          {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
           <button
-            onClick={submit}
-            className="mt-4 flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 text-sm font-semibold text-white transition hover:bg-blue-700 active:scale-[.99]"
+            type="submit"
+            className="mt-5 flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 text-sm font-semibold text-white transition hover:bg-blue-700"
           >
             <LockKeyhole size={17} />
-            {setup ? "Create PIN" : "Continue"}
+            Continue
           </button>
-        </div>
+          <p className="mt-4 text-xs leading-5 text-slate-500">
+            This PIN is a basic dashboard screen lock, not secure account
+            authentication.
+          </p>
+        </form>
       </section>
     </main>
   );
 }
 
-function Admin() {
-  const [text, setText, connection] = useSyncedText();
+function AdminGate() {
+  const [unlocked, setUnlocked] = useState(false);
+
+  if (!isSupabaseConfigured || !isAdminPinConfigured) return <SupabaseSetup />;
+  if (!unlocked) return <PinScreen onSuccess={() => setUnlocked(true)} />;
+
+  return <Admin onLock={() => setUnlocked(false)} />;
+}
+
+function Admin({ onLock }: { onLock: () => void }) {
+  const [text, setText, fontSize, setFontSize, connection] = useSyncedText();
   const [saved, setSaved] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [ip, setIp] = useState("Loading...");
   const [syncError, setSyncError] = useState("");
-
   const displayUrl = useMemo(() => `${window.location.origin}/display`, []);
 
-  useEffect(() => {
-    setIp(window.location.hostname || "localhost");
-  }, []);
-
   async function updateDisplay() {
+    if (!supabase) return;
     setSyncError("");
-    try {
-      const response = await fetch("/api/text", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
-      });
-      if (!response.ok) throw new Error("Update failed");
-      localStorage.setItem(STORAGE_TEXT, text);
-      setSaved(true);
-      window.setTimeout(() => setSaved(false), 1800);
-    } catch {
-      setSyncError("Sync server unavailable. Check that TextTV is running.");
+    const { data, error } = await supabase
+      .from("display_state")
+      .update({
+        text,
+        font_size: fontSize,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", 1)
+      .select("id")
+      .maybeSingle();
+    if (error) {
+      setSyncError(error.message);
+      return;
     }
+    if (!data) {
+      setSyncError(
+        "No row was updated. Run the current supabase/schema.sql in your Supabase SQL Editor.",
+      );
+      return;
+    }
+    setSaved(true);
+    window.setTimeout(() => setSaved(false), 1800);
   }
 
   async function copyUrl() {
@@ -178,10 +220,12 @@ function Admin() {
     window.setTimeout(() => setCopied(false), 1500);
   }
 
-  function logout() {
-    localStorage.removeItem(STORAGE_AUTH);
-    window.location.reload();
-  }
+  const connectionLabel =
+    connection === "connected"
+      ? "Realtime Service connected"
+      : connection === "disconnected"
+        ? "Realtime Service connection unavailable"
+        : "Connecting to Realtime Service...";
 
   return (
     <main className="min-h-screen bg-slate-50 text-slate-950">
@@ -197,11 +241,11 @@ function Admin() {
             </div>
           </div>
           <button
-            onClick={logout}
+            onClick={onLock}
             className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-slate-500 hover:bg-slate-100 hover:text-slate-900"
           >
             <LogOut size={16} />
-            Sign out
+            Lock dashboard
           </button>
         </div>
       </header>
@@ -215,11 +259,7 @@ function Admin() {
                 <span
                   className={`text-xs ${connection === "connected" ? "text-emerald-600" : connection === "disconnected" ? "text-red-600" : "text-amber-600"}`}
                 >
-                  {connection === "connected"
-                    ? "Sync server connected"
-                    : connection === "disconnected"
-                      ? "Sync server unavailable"
-                      : "Connecting to sync server…"}
+                  {connectionLabel}
                 </span>
               </div>
               <p className="mt-1 text-sm text-slate-500">
@@ -229,10 +269,41 @@ function Admin() {
 
             <textarea
               value={text}
-              onChange={(e) => setText(e.target.value)}
+              onChange={(event) => setText(event.target.value)}
               placeholder="Type something to display..."
               className="min-h-52 w-full resize-y rounded-xl border border-slate-200 bg-slate-50 p-4 text-base leading-7 outline-none transition focus:border-blue-500 focus:bg-white focus:ring-4 focus:ring-blue-500/10"
             />
+
+            <div className="mt-4">
+              <div className="mb-2 flex items-center justify-between">
+                <label
+                  htmlFor="display-font-size"
+                  className="text-sm font-medium"
+                >
+                  Display font size
+                </label>
+                <span className="text-sm font-semibold text-blue-700">
+                  {fontSize}%
+                </span>
+              </div>
+              <input
+                id="display-font-size"
+                type="range"
+                min={50}
+                max={200}
+                step={5}
+                value={fontSize}
+                onChange={(event) =>
+                  setFontSize(event.currentTarget.valueAsNumber)
+                }
+                className="w-full accent-blue-600"
+                aria-label="Display font size percentage"
+              />
+              <div className="flex justify-between text-xs text-slate-400">
+                <span>50%</span>
+                <span>200%</span>
+              </div>
+            </div>
 
             <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <span className="text-xs text-slate-400">
@@ -242,6 +313,7 @@ function Admin() {
                 <a
                   href="/display"
                   target="_blank"
+                  rel="noreferrer"
                   className="flex h-10 items-center justify-center gap-2 rounded-xl border border-slate-200 px-4 text-sm font-medium hover:bg-slate-50"
                 >
                   <ExternalLink size={16} />
@@ -265,7 +337,10 @@ function Admin() {
                 Approximate TV appearance.
               </p>
             </div>
-            <div className="flex aspect-video items-center justify-center overflow-hidden rounded-xl bg-black p-5 text-center text-2xl font-bold leading-tight text-white sm:text-3xl">
+            <div
+              className="flex aspect-video items-center justify-center overflow-hidden rounded-xl bg-black p-5 text-center font-bold leading-tight text-white"
+              style={{ fontSize: `${1.5 * (fontSize / 100)}rem` }}
+            >
               {text || <span className="text-white/20">No text</span>}
             </div>
           </div>
@@ -281,15 +356,14 @@ function Admin() {
               <QRCodeSVG value={displayUrl} size={190} level="M" />
             </div>
             <p className="mt-3 text-center text-xs text-slate-500">
-              Open this URL on any device that can reach the TextTV server.
+              Scan to open this display on any internet-connected device.
             </p>
           </div>
 
           <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <h2 className="font-semibold">Connection Information</h2>
+            <h2 className="font-semibold">Display Connection</h2>
             <div className="mt-4 space-y-3">
-              <InfoRow label="Local IP / Host" value={ip} />
-              <InfoRow label="Port" value={window.location.port || "80"} />
+              <InfoRow label="Sync status" value={connectionLabel} />
               <InfoRow label="Display URL" value={displayUrl} />
             </div>
             <button
@@ -300,8 +374,8 @@ function Admin() {
               {copied ? "Copied" : "Copy Display URL"}
             </button>
             <p className="mt-4 text-xs leading-5 text-slate-400">
-              TextTV runs its own sync server. Devices on other networks need a
-              private VPN or another secure route to this server.
+              The display reads the shared text directly from Supabase and does
+              not require the PIN.
             </p>
           </div>
         </section>
@@ -322,23 +396,33 @@ function InfoRow({ label, value }: { label: string; value: string }) {
 }
 
 function Display() {
-  const [text] = useSyncedText();
+  const [text, , fontSize] = useSyncedText();
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const scale = fontSize / 100;
+  const displayFontSize = text
+    ? `clamp(${3 * scale}rem, ${9 * scale}vw, ${12 * scale}rem)`
+    : `clamp(${1.5 * scale}rem, ${4 * scale}vw, ${4 * scale}rem)`;
 
   async function fullscreen() {
     try {
       if (!document.fullscreenElement)
         await document.documentElement.requestFullscreen();
+      setIsFullscreen(Boolean(document.fullscreenElement));
     } catch {}
   }
 
   useEffect(() => {
-    const timer = window.setTimeout(fullscreen, 400);
+    const updateFullscreenState = () =>
+      setIsFullscreen(Boolean(document.fullscreenElement));
     const onKey = (event: KeyboardEvent) => {
-      if (event.key.toLowerCase() === "f") fullscreen();
+      if (event.key.toLowerCase() === "f") void fullscreen();
     };
+    updateFullscreenState();
+    void fullscreen();
+    document.addEventListener("fullscreenchange", updateFullscreenState);
     window.addEventListener("keydown", onKey);
     return () => {
-      window.clearTimeout(timer);
+      document.removeEventListener("fullscreenchange", updateFullscreenState);
       window.removeEventListener("keydown", onKey);
     };
   }, []);
@@ -349,26 +433,27 @@ function Display() {
       onDoubleClick={fullscreen}
       title="Press F for fullscreen"
     >
-      <div className={`tv-text ${!text ? "tv-empty" : ""}`}>
+      <div
+        className={`tv-text ${!text ? "tv-empty" : ""}`}
+        style={{ fontSize: displayFontSize }}
+      >
         {text || "Waiting for display text..."}
       </div>
+      {!isFullscreen && (
+        <button
+          onClick={() => void fullscreen()}
+          className="fixed bottom-5 right-5 rounded-xl bg-white/90 px-4 py-3 text-sm font-semibold text-slate-900 shadow-lg backdrop-blur transition hover:bg-white"
+        >
+          Tap to enter fullscreen
+        </button>
+      )}
     </main>
   );
 }
 
 export default function App() {
-  const path = window.location.pathname;
-
-  if (path === "/display") return <Display />;
-
-  const setup = !localStorage.getItem(STORAGE_PIN);
-  const [authenticated, setAuthenticated] = useState(
-    localStorage.getItem(STORAGE_AUTH) === "1",
-  );
-
-  if (!authenticated) {
-    return <PinScreen setup={setup} onSuccess={() => setAuthenticated(true)} />;
+  if (window.location.pathname === "/display") {
+    return isSupabaseConfigured ? <Display /> : <SupabaseSetup />;
   }
-
-  return <Admin />;
+  return <AdminGate />;
 }
