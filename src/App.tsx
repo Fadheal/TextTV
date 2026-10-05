@@ -27,17 +27,40 @@ function getText() {
   return localStorage.getItem(STORAGE_TEXT) ?? "";
 }
 
-function saveText(value: string) {
-  localStorage.setItem(STORAGE_TEXT, value);
-  const channel = new BroadcastChannel("texttv");
-  channel.postMessage({ type: "text", value });
-  channel.close();
-  window.dispatchEvent(
-    new StorageEvent("storage", {
-      key: STORAGE_TEXT,
-      newValue: value,
-    }),
-  );
+function useSyncedText() {
+  const [text, setText] = useState(getText);
+  const [connected, setConnected] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    fetch("/api/text")
+      .then((response) => {
+        if (!response.ok) throw new Error("Unable to load display text");
+        return response.json() as Promise<{ text: string }>;
+      })
+      .then((data) => {
+        if (!active) return;
+        setText(data.text);
+        localStorage.setItem(STORAGE_TEXT, data.text);
+      })
+      .catch(() => setConnected(false));
+
+    const events = new EventSource("/api/events");
+    events.onopen = () => setConnected(true);
+    events.onerror = () => setConnected(false);
+    events.onmessage = (event) => {
+      const data = JSON.parse(event.data) as { text: string };
+      setText(data.text);
+      localStorage.setItem(STORAGE_TEXT, data.text);
+    };
+
+    return () => {
+      active = false;
+      events.close();
+    };
+  }, []);
+
+  return [text, setText, connected] as const;
 }
 
 function PinScreen({
@@ -118,10 +141,11 @@ function PinScreen({
 }
 
 function Admin() {
-  const [text, setText] = useState(getText());
+  const [text, setText, connected] = useSyncedText();
   const [saved, setSaved] = useState(false);
   const [copied, setCopied] = useState(false);
   const [ip, setIp] = useState("Loading...");
+  const [syncError, setSyncError] = useState("");
 
   const displayUrl = useMemo(() => `${window.location.origin}/display`, []);
 
@@ -129,10 +153,21 @@ function Admin() {
     setIp(window.location.hostname || "localhost");
   }, []);
 
-  function updateDisplay() {
-    saveText(text);
-    setSaved(true);
-    window.setTimeout(() => setSaved(false), 1800);
+  async function updateDisplay() {
+    setSyncError("");
+    try {
+      const response = await fetch("/api/text", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      if (!response.ok) throw new Error("Update failed");
+      localStorage.setItem(STORAGE_TEXT, text);
+      setSaved(true);
+      window.setTimeout(() => setSaved(false), 1800);
+    } catch {
+      setSyncError("Sync server unavailable. Check that TextTV is running.");
+    }
   }
 
   async function copyUrl() {
@@ -173,9 +208,18 @@ function Admin() {
         <section className="grid gap-5 lg:grid-cols-[1fr_360px]">
           <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
             <div className="mb-4">
-              <h2 className="font-semibold">Display Text</h2>
+              <div className="flex items-center justify-between gap-3">
+                <h2 className="font-semibold">Display Text</h2>
+                <span
+                  className={`text-xs ${connected ? "text-emerald-600" : "text-amber-600"}`}
+                >
+                  {connected
+                    ? "Sync server connected"
+                    : "Connecting to sync server…"}
+                </span>
+              </div>
               <p className="mt-1 text-sm text-slate-500">
-                This text appears on the TV display.
+                This text appears on every connected display.
               </p>
             </div>
 
@@ -188,7 +232,7 @@ function Admin() {
 
             <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <span className="text-xs text-slate-400">
-                {text.length} characters
+                {syncError || `${text.length} characters`}
               </span>
               <div className="flex gap-2">
                 <a
@@ -233,7 +277,7 @@ function Admin() {
               <QRCodeSVG value={displayUrl} size={190} level="M" />
             </div>
             <p className="mt-3 text-center text-xs text-slate-500">
-              Scan from a TV, phone, tablet, or laptop on the same network.
+              Open this URL on any device that can reach the TextTV server.
             </p>
           </div>
 
@@ -252,9 +296,8 @@ function Admin() {
               {copied ? "Copied" : "Copy Display URL"}
             </button>
             <p className="mt-4 text-xs leading-5 text-slate-400">
-              Make sure the device running TextTV is reachable from your LAN.
-              Start Vite with the default host configuration included in this
-              project.
+              TextTV runs its own sync server. Devices on other networks need a
+              private VPN or another secure route to this server.
             </p>
           </div>
         </section>
@@ -275,45 +318,7 @@ function InfoRow({ label, value }: { label: string; value: string }) {
 }
 
 function Display() {
-  const [text, setText] = useState(getText());
-
-  useEffect(() => {
-    function sync(event: StorageEvent) {
-      if (event.key === STORAGE_TEXT) setText(event.newValue ?? "");
-    }
-
-    window.addEventListener("storage", sync);
-
-    const channel = new BroadcastChannel("texttv");
-    channel.onmessage = (event) => {
-      if (event.data?.type === "text") setText(event.data.value ?? "");
-    };
-
-    return () => {
-      window.removeEventListener("storage", sync);
-      channel.close();
-    };
-  }, []);
-
-  useEffect(() => {
-    const channel = new BroadcastChannel("texttv");
-    const handler = () => channel.postMessage({ type: "request" });
-    window.addEventListener("focus", handler);
-    return () => {
-      window.removeEventListener("focus", handler);
-      channel.close();
-    };
-  }, []);
-
-  useEffect(() => {
-    const requestChannel = new BroadcastChannel("texttv");
-    requestChannel.onmessage = (event) => {
-      if (event.data?.type === "request") {
-        requestChannel.postMessage({ type: "text", value: getText() });
-      }
-    };
-    return () => requestChannel.close();
-  }, []);
+  const [text] = useSyncedText();
 
   async function fullscreen() {
     try {
