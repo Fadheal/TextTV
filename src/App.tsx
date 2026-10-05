@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ExternalLink,
   Copy,
@@ -23,23 +23,6 @@ function hashPin(pin: string) {
   return (hash >>> 0).toString(16);
 }
 
-function getText() {
-  return localStorage.getItem(STORAGE_TEXT) ?? "";
-}
-
-function saveText(value: string) {
-  localStorage.setItem(STORAGE_TEXT, value);
-  const channel = new BroadcastChannel("texttv");
-  channel.postMessage({ type: "text", value });
-  channel.close();
-  window.dispatchEvent(
-    new StorageEvent("storage", {
-      key: STORAGE_TEXT,
-      newValue: value,
-    }),
-  );
-}
-
 function PinScreen({
   setup,
   onSuccess,
@@ -55,14 +38,12 @@ function PinScreen({
       setError("Use at least 4 digits.");
       return;
     }
-
     if (setup) {
       localStorage.setItem(STORAGE_PIN, hashPin(pin));
       localStorage.setItem(STORAGE_AUTH, "1");
       onSuccess();
       return;
     }
-
     if (hashPin(pin) === localStorage.getItem(STORAGE_PIN)) {
       localStorage.setItem(STORAGE_AUTH, "1");
       onSuccess();
@@ -117,20 +98,28 @@ function PinScreen({
   );
 }
 
+function InfoRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl bg-slate-50 p-3">
+      <div className="text-xs font-medium text-slate-500">{label}</div>
+      <div className="mt-1 break-all font-mono text-sm text-slate-900">
+        {value}
+      </div>
+    </div>
+  );
+}
+
 function Admin() {
-  const [text, setText] = useState(getText());
+  const [text, setText] = useState(localStorage.getItem(STORAGE_TEXT) ?? "");
+  const [published, setPublished] = useState(text);
   const [saved, setSaved] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [ip, setIp] = useState("Loading...");
 
-  const displayUrl = useMemo(() => `${window.location.origin}/display`, []);
-
-  useEffect(() => {
-    setIp(window.location.hostname || "localhost");
-  }, []);
+  const displayUrl = `${window.location.origin}/display#t=${encodeURIComponent(published)}`;
 
   function updateDisplay() {
-    saveText(text);
+    localStorage.setItem(STORAGE_TEXT, text);
+    setPublished(text);
     setSaved(true);
     window.setTimeout(() => setSaved(false), 1800);
   }
@@ -175,7 +164,7 @@ function Admin() {
             <div className="mb-4">
               <h2 className="font-semibold">Display Text</h2>
               <p className="mt-1 text-sm text-slate-500">
-                This text appears on the TV display.
+                Type text, click Update, then open or scan the link on the TV.
               </p>
             </div>
 
@@ -192,7 +181,7 @@ function Admin() {
               </span>
               <div className="flex gap-2">
                 <a
-                  href="/display"
+                  href={displayUrl}
                   target="_blank"
                   className="flex h-10 items-center justify-center gap-2 rounded-xl border border-slate-200 px-4 text-sm font-medium hover:bg-slate-50"
                 >
@@ -233,15 +222,13 @@ function Admin() {
               <QRCodeSVG value={displayUrl} size={190} level="M" />
             </div>
             <p className="mt-3 text-center text-xs text-slate-500">
-              Scan from a TV, phone, tablet, or laptop on the same network.
+              Scan with the TV or phone. Rescan after each update.
             </p>
           </div>
 
           <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <h2 className="font-semibold">Connection Information</h2>
+            <h2 className="font-semibold">Display Link</h2>
             <div className="mt-4 space-y-3">
-              <InfoRow label="Local IP / Host" value={ip} />
-              <InfoRow label="Port" value={window.location.port || "80"} />
               <InfoRow label="Display URL" value={displayUrl} />
             </div>
             <button
@@ -251,11 +238,6 @@ function Admin() {
               {copied ? <Check size={16} /> : <Copy size={16} />}
               {copied ? "Copied" : "Copy Display URL"}
             </button>
-            <p className="mt-4 text-xs leading-5 text-slate-400">
-              Make sure the device running TextTV is reachable from your LAN.
-              Start Vite with the default host configuration included in this
-              project.
-            </p>
           </div>
         </section>
       </div>
@@ -263,83 +245,43 @@ function Admin() {
   );
 }
 
-function InfoRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-xl bg-slate-50 p-3">
-      <div className="text-xs font-medium text-slate-500">{label}</div>
-      <div className="mt-1 break-all font-mono text-sm text-slate-900">
-        {value}
-      </div>
-    </div>
-  );
+function readHash() {
+  return new URLSearchParams(window.location.hash.slice(1)).get("t") ?? "";
 }
 
 function Display() {
-  const [text, setText] = useState(getText());
+  const [text, setText] = useState(readHash());
 
   useEffect(() => {
-    function sync(event: StorageEvent) {
-      if (event.key === STORAGE_TEXT) setText(event.newValue ?? "");
-    }
-
-    window.addEventListener("storage", sync);
-
-    const channel = new BroadcastChannel("texttv");
-    channel.onmessage = (event) => {
-      if (event.data?.type === "text") setText(event.data.value ?? "");
-    };
-
-    return () => {
-      window.removeEventListener("storage", sync);
-      channel.close();
-    };
+    const onHash = () => setText(readHash());
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
   useEffect(() => {
-    const channel = new BroadcastChannel("texttv");
-    const handler = () => channel.postMessage({ type: "request" });
-    window.addEventListener("focus", handler);
-    return () => {
-      window.removeEventListener("focus", handler);
-      channel.close();
-    };
-  }, []);
-
-  useEffect(() => {
-    const requestChannel = new BroadcastChannel("texttv");
-    requestChannel.onmessage = (event) => {
-      if (event.data?.type === "request") {
-        requestChannel.postMessage({ type: "text", value: getText() });
+    async function fullscreen() {
+      try {
+        if (!document.fullscreenElement)
+          await document.documentElement.requestFullscreen();
+      } catch {
+        /* ignore */
       }
-    };
-    return () => requestChannel.close();
-  }, []);
-
-  async function fullscreen() {
-    try {
-      if (!document.fullscreenElement)
-        await document.documentElement.requestFullscreen();
-    } catch {}
-  }
-
-  useEffect(() => {
+    }
     const timer = window.setTimeout(fullscreen, 400);
     const onKey = (event: KeyboardEvent) => {
       if (event.key.toLowerCase() === "f") fullscreen();
     };
     window.addEventListener("keydown", onKey);
+    window.addEventListener("dblclick", fullscreen);
     return () => {
       window.clearTimeout(timer);
       window.removeEventListener("keydown", onKey);
+      window.removeEventListener("dblclick", fullscreen);
     };
   }, []);
 
   return (
-    <main
-      className="tv-page"
-      onDoubleClick={fullscreen}
-      title="Press F for fullscreen"
-    >
+    <main className="tv-page" title="Press F for fullscreen">
       <div className={`tv-text ${!text ? "tv-empty" : ""}`}>
         {text || "Waiting for display text..."}
       </div>
@@ -347,11 +289,7 @@ function Display() {
   );
 }
 
-export default function App() {
-  const path = window.location.pathname;
-
-  if (path === "/display") return <Display />;
-
+function AdminGate() {
   const setup = !localStorage.getItem(STORAGE_PIN);
   const [authenticated, setAuthenticated] = useState(
     localStorage.getItem(STORAGE_AUTH) === "1",
@@ -360,6 +298,9 @@ export default function App() {
   if (!authenticated) {
     return <PinScreen setup={setup} onSuccess={() => setAuthenticated(true)} />;
   }
-
   return <Admin />;
+}
+
+export default function App() {
+  return window.location.pathname === "/display" ? <Display /> : <AdminGate />;
 }
