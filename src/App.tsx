@@ -1,12 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
+import { upload } from "@vercel/blob/client";
 import {
   Check,
   Copy,
   ExternalLink,
+  Film,
   LockKeyhole,
   LogOut,
   Monitor,
+  Trash2,
+  Upload,
   Wifi,
 } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
@@ -20,6 +24,7 @@ import {
 function useSyncedText() {
   const [text, setText] = useState("");
   const [fontSize, setFontSize] = useState(100);
+  const [videoUrl, setVideoUrl] = useState("");
   const [connection, setConnection] = useState<
     "connecting" | "connected" | "disconnected"
   >("connecting");
@@ -33,7 +38,7 @@ function useSyncedText() {
     let active = true;
     void supabase
       .from("display_state")
-      .select("text, font_size")
+      .select("text, font_size, video_url")
       .eq("id", 1)
       .single()
       .then(({ data, error }) => {
@@ -44,6 +49,7 @@ function useSyncedText() {
         }
         setText(data.text);
         setFontSize(data.font_size);
+        setVideoUrl(data.video_url ?? "");
       });
 
     const channel = supabase
@@ -63,6 +69,10 @@ function useSyncedText() {
           if (typeof updatedFontSize === "number") {
             setFontSize(updatedFontSize);
           }
+          const updatedVideoUrl = payload.new.video_url;
+          if (typeof updatedVideoUrl === "string" || updatedVideoUrl === null) {
+            setVideoUrl(updatedVideoUrl ?? "");
+          }
         },
       )
       .subscribe((status) => {
@@ -76,7 +86,15 @@ function useSyncedText() {
     };
   }, []);
 
-  return [text, setText, fontSize, setFontSize, connection] as const;
+  return [
+    text,
+    setText,
+    fontSize,
+    setFontSize,
+    videoUrl,
+    setVideoUrl,
+    connection,
+  ] as const;
 }
 
 function SupabaseSetup() {
@@ -181,10 +199,20 @@ function AdminGate() {
 }
 
 function Admin({ onLock }: { onLock: () => void }) {
-  const [text, setText, fontSize, setFontSize, connection] = useSyncedText();
+  const [
+    text,
+    setText,
+    fontSize,
+    setFontSize,
+    videoUrl,
+    setVideoUrl,
+    connection,
+  ] = useSyncedText();
   const [saved, setSaved] = useState(false);
   const [copied, setCopied] = useState(false);
   const [syncError, setSyncError] = useState("");
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [uploadError, setUploadError] = useState("");
   const displayUrl = useMemo(() => `${window.location.origin}/display`, []);
 
   async function updateDisplay() {
@@ -195,6 +223,7 @@ function Admin({ onLock }: { onLock: () => void }) {
       .update({
         text,
         font_size: fontSize,
+        video_url: videoUrl || null,
         updated_at: new Date().toISOString(),
       })
       .eq("id", 1)
@@ -218,6 +247,47 @@ function Admin({ onLock }: { onLock: () => void }) {
     await navigator.clipboard.writeText(displayUrl);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1500);
+  }
+
+  async function uploadVideo(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+    if (!file) return;
+
+    const allowedTypes = ["video/mp4", "video/webm", "video/quicktime"];
+    if (!allowedTypes.includes(file.type)) {
+      setUploadError("Choose an MP4, WebM, or MOV video.");
+      return;
+    }
+    if (file.size > 500 * 1024 * 1024) {
+      setUploadError("Videos must be 500 MB or smaller.");
+      return;
+    }
+    if (!adminPin) {
+      setUploadError("Configure the admin PIN before uploading videos.");
+      return;
+    }
+
+    setUploadError("");
+    setUploadProgress(0);
+    try {
+      const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "-");
+      const blob = await upload(`videos/${safeName}`, file, {
+        access: "public",
+        handleUploadUrl: "/api/video-upload",
+        clientPayload: adminPin,
+        multipart: true,
+        onUploadProgress: ({ percentage }) =>
+          setUploadProgress(Math.round(percentage)),
+      });
+      setVideoUrl(blob.url);
+    } catch (error) {
+      setUploadError(
+        error instanceof Error ? error.message : "Video upload failed.",
+      );
+    } finally {
+      setUploadProgress(null);
+    }
   }
 
   const connectionLabel =
@@ -338,10 +408,67 @@ function Admin({ onLock }: { onLock: () => void }) {
               </p>
             </div>
             <div
-              className="flex aspect-video items-center justify-center overflow-hidden rounded-xl bg-black p-5 text-center font-bold leading-tight text-white"
+              className="relative flex aspect-video items-center justify-center overflow-hidden rounded-xl bg-black p-5 text-center font-bold leading-tight text-white"
               style={{ fontSize: `${1.5 * (fontSize / 100)}rem` }}
             >
-              {text || <span className="text-white/20">No text</span>}
+              {videoUrl && (
+                <video
+                  className="absolute inset-0 size-full object-cover"
+                  src={videoUrl}
+                  autoPlay
+                  loop
+                  muted
+                  playsInline
+                />
+              )}
+              <span className="relative z-10 drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)]">
+                {text || <span className="text-white/70">No text</span>}
+              </span>
+            </div>
+            <div className="mt-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="flex h-10 cursor-pointer items-center gap-2 rounded-xl bg-blue-600 px-4 text-sm font-semibold text-white transition hover:bg-blue-700">
+                  {uploadProgress === null ? (
+                    <Upload size={16} />
+                  ) : (
+                    <Film size={16} />
+                  )}
+                  {uploadProgress === null
+                    ? videoUrl
+                      ? "Replace video"
+                      : "Upload video"
+                    : `Uploading ${uploadProgress}%`}
+                  <input
+                    type="file"
+                    accept="video/mp4,video/webm,video/quicktime"
+                    onChange={(event) => void uploadVideo(event)}
+                    disabled={uploadProgress !== null}
+                    className="sr-only"
+                  />
+                </label>
+                {videoUrl && (
+                  <button
+                    type="button"
+                    onClick={() => setVideoUrl("")}
+                    className="flex h-10 items-center gap-2 rounded-xl border border-slate-200 px-3 text-sm font-medium text-slate-600 hover:bg-slate-50"
+                  >
+                    <Trash2 size={15} />
+                    Remove
+                  </button>
+                )}
+              </div>
+              <p className="mt-2 text-xs leading-5 text-slate-500">
+                MP4, WebM, or MOV · up to 500 MB. The video loops silently on
+                the display.
+              </p>
+              {uploadError && (
+                <p className="mt-2 text-xs text-red-600">{uploadError}</p>
+              )}
+              {videoUrl && !uploadError && (
+                <p className="mt-2 truncate text-xs text-emerald-700">
+                  Video ready. Click Update Display to publish it.
+                </p>
+              )}
             </div>
           </div>
         </section>
@@ -396,7 +523,7 @@ function InfoRow({ label, value }: { label: string; value: string }) {
 }
 
 function Display() {
-  const [text, , fontSize] = useSyncedText();
+  const [text, , fontSize, , videoUrl] = useSyncedText();
   const [isFullscreen, setIsFullscreen] = useState(false);
   const scale = fontSize / 100;
   const displayFontSize = text
@@ -433,8 +560,18 @@ function Display() {
       onDoubleClick={fullscreen}
       title="Press F for fullscreen"
     >
+      {videoUrl && (
+        <video
+          className="absolute inset-0 size-full object-cover"
+          src={videoUrl}
+          autoPlay
+          loop
+          muted
+          playsInline
+        />
+      )}
       <div
-        className={`tv-text ${!text ? "tv-empty" : ""}`}
+        className={`tv-text relative z-10 ${!text ? "tv-empty" : ""}`}
         style={{ fontSize: displayFontSize }}
       >
         {text || "Waiting for display text..."}

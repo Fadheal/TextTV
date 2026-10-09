@@ -2,11 +2,15 @@ create table if not exists public.display_state (
   id integer primary key check (id = 1),
   text text not null default '',
   font_size integer not null default 100,
+  video_url text,
   updated_at timestamptz not null default now()
 );
 
 alter table public.display_state
   add column if not exists font_size integer not null default 100;
+
+alter table public.display_state
+  add column if not exists video_url text;
 
 insert into public.display_state (id, text)
 values (1, '')
