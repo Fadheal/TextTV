@@ -4,7 +4,7 @@ import type { HandleUploadBody } from "@vercel/blob/client";
 const allowedContentTypes = ["video/mp4", "video/webm", "video/quicktime"];
 const maxVideoSize = 500 * 1024 * 1024;
 
-export default async function handler(request: Request): Promise<Response> {
+export async function POST(request: Request): Promise<Response> {
   if (request.method !== "POST") {
     return Response.json({ error: "Method not allowed." }, { status: 405 });
   }
